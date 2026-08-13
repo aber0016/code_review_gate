@@ -1,0 +1,15 @@
+# gauntlet gate config for the pi-gauntlet repo itself (dogfood).
+# The fixture/ tree is a *planted-bug* corpus — the permanent regression
+# suite for the gate — and must never redden this repo's own gate.
+exclude_paths = ["fixture"]
+src_paths = ["cli/src"]
+
+[runners.bandit]
+# B101 (bare assert) is what pytest tests are made of; skipping it keeps the
+# report signal-dense. Applies to this repo only, not a gauntlet default.
+args = ["--skip", "B101"]
+
+[runners.pytest]
+# Scope collection to gauntlet's own suite: fixture/tests are planted-broken
+# by design (fixture_pkg is not installed in this repo's venv).
+args = ["cli/tests"]

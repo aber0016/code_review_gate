@@ -1,0 +1,86 @@
+# gauntlet CI gate (§11 of the plan): the IDENTICAL binary that runs in pi and
+# in the pre-push hook gates pull requests here.
+#
+# Layer 6 (the cross-model LLM review) intentionally stays OUT of this
+# untrusted CI context: it needs model credentials, and secrets must never be
+# exposed to workflows that run on pull-request code. It runs locally in pi,
+# where the credentials already live. Do not "fix" this by adding secrets.
+#
+# Trigger is plain `pull_request` — never the `*_target` variant (which would
+# run with elevated permissions against untrusted code).
+
+name: gauntlet
+
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # nightly deep (mutation) run, non-blocking
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  fast:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+      - name: Install gauntlet + checked tools
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e "./cli[dev,full]"
+      - name: Run fast tier
+        run: |
+          .venv/bin/gauntlet run --tier fast --base "origin/${{ github.base_ref }}" --json
+
+  exec:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+      - name: Install gauntlet + checked tools
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e "./cli[dev,full]"
+      - name: Run exec tier
+        run: |
+          .venv/bin/gauntlet run --tier exec --base "origin/${{ github.base_ref }}" --json
+
+  deep:
+    # Mutation testing is slow and advisory: nightly or on demand only,
+    # and it never blocks a merge (continue-on-error).
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          python-version: "3.12"
+      - name: Install gauntlet + checked tools
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/bin/python -e "./cli[dev,full]"
+      - name: Run deep tier (report-only)
+        continue-on-error: true
+        run: |
+          .venv/bin/gauntlet run --tier deep --base "HEAD~1" --json > deep-report.json || true
+          cat deep-report.json
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: gauntlet-deep-report
+          path: deep-report.json

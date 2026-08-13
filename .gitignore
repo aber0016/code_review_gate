@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+junit.xml
+dist/
+build/
+
+# gauntlet workdirs (scaffolds are suggestions, never committed automatically)
+.gauntlet/
+
+# mutmut 3 working directory
+mutants/
+
+# Node
+node_modules/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# local-only working notes and the private design doc (never published)
+tasks/
+pi-gauntlet-implementation-plan.md

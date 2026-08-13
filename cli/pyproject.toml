@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gauntlet"
+version = "0.1.0"
+description = "Layered review-and-test gate for AI-generated Python code"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# Runtime deps: none beyond stdlib, by design (plan §13). The *checked tools* are
+# provided by the target repo's venv, never bundled here.
+dependencies = []
+
+[project.scripts]
+gauntlet = "gauntlet.cli:main"
+
+[project.optional-dependencies]
+# Convenience extra for repos that want every checked tool in one install.
+full = [
+    "ruff",
+    "mypy",
+    "bandit",
+    "pip-audit",
+    "pytest",
+    "pytest-cov",
+    "diff-cover",
+    "mutmut",
+    "hypothesis",
+    "detect-secrets",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "mypy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gauntlet"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "BLE", "C4", "PTH", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["gauntlet"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
