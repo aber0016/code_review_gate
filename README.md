@@ -18,7 +18,7 @@ pre-push hook, and in CI. The result is always the same.
 Install the pi package:
 
 ```bash
-pi install git:github.com/aber0016/code_review_gate@v1.2.0
+pi install git:github.com/aber0016/code_review_gate@v1.3.0
 ```
 
 ## What is in this repository
@@ -198,7 +198,7 @@ The exit codes are: `0` = no blocking findings. `1` = blocking findings.
 Install the package with a pinned tag:
 
 ```bash
-pi install git:github.com/aber0016/code_review_gate@v1.2.0
+pi install git:github.com/aber0016/code_review_gate@v1.3.0
 ```
 
 Then run the gate in pi:

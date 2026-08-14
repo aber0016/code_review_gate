@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.3.0 — 2026-08-14
 
 - New `critical-paths` runner (fast tier). The `critical_paths` key in
   `.gauntlet.toml` is a red-list: a change or a deletion on these paths always
