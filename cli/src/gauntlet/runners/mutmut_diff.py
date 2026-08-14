@@ -68,6 +68,32 @@ def diff_first_changed_line(diff: str) -> int:
     return 0
 
 
+def survivor_finding(
+    name: str, diff: str, file: str, snippet: str, blocking: bool
+) -> Finding:
+    """The finding for one surviving mutant.
+
+    ``blocking`` follows ``deep.blocking`` (and the survivor budget): when it
+    is off, the finding must be a no-op — warning+ask-user would still trip
+    ``Finding.blocking()`` and redden headless runs regardless of the config.
+    """
+    return Finding(
+        id=make_id("mutmut", "survived", file, name),
+        layer=Layer.MUTATION,
+        tool="mutmut",
+        severity=Severity.ERROR if blocking else Severity.WARNING,
+        action=Action.ASK_USER if blocking else Action.NO_OP,
+        file=file,
+        line=diff_first_changed_line(diff),
+        message=(
+            f"surviving mutant {name}: the test suite does not "
+            f"detect this injected bug ({snippet or 'see evidence'})"
+        ),
+        evidence=diff[:_EVIDENCE_LIMIT],
+        fix_hint="add a test that kills this mutant",
+    )
+
+
 def render_setup_cfg(
     existing: str | None, src_paths: list[str], only_mutate: list[str]
 ) -> str:
@@ -193,23 +219,7 @@ class MutmutDiffRunner:
                     if (line.startswith("-") or line.startswith("+"))
                     and not line.startswith(("---", "+++"))
                 )[:200]
-                findings.append(
-                    Finding(
-                        id=make_id(self.name, "survived", file, name),
-                        layer=self.layer,
-                        tool=self.name,
-                        severity=Severity.ERROR if blocking else Severity.WARNING,
-                        action=Action.ASK_USER,
-                        file=file,
-                        line=diff_first_changed_line(diff),
-                        message=(
-                            f"surviving mutant {name}: the test suite does not "
-                            f"detect this injected bug ({snippet or 'see evidence'})"
-                        ),
-                        evidence=diff[:_EVIDENCE_LIMIT],
-                        fix_hint="add a test that kills this mutant",
-                    )
-                )
+                findings.append(survivor_finding(name, diff, file, snippet, blocking))
             return findings
         finally:
             shutil.rmtree(workdir, ignore_errors=True)

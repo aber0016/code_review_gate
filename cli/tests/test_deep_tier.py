@@ -17,6 +17,7 @@ from gauntlet.runners.mutmut_diff import (
     mutant_module,
     parse_results,
     render_setup_cfg,
+    survivor_finding,
 )
 
 
@@ -127,6 +128,22 @@ class TestRunner:
         ctx = make_ctx(tmp_path)
         ctx.changed_files = [Path("tests/test_x.py"), Path("README.md")]
         assert MutmutDiffRunner(ctx).run(ctx) == []
+
+
+class TestSurvivorBlocking:
+    """`[deep] blocking = false` must actually be non-blocking (advisory)."""
+
+    def test_non_blocking_survivor_is_advisory(self) -> None:
+        finding = survivor_finding("m.x__mutmut_1", "", "src/m.py", "", blocking=False)
+        assert finding.severity is Severity.WARNING
+        assert finding.action is Action.NO_OP
+        assert finding.blocking() is False
+
+    def test_blocking_survivor_blocks(self) -> None:
+        finding = survivor_finding("m.x__mutmut_1", "", "src/m.py", "", blocking=True)
+        assert finding.severity is Severity.ERROR
+        assert finding.action is Action.ASK_USER
+        assert finding.blocking() is True
 
 
 class TestTierGating:
