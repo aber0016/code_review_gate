@@ -1,110 +1,183 @@
-# pi-gauntlet
+# code_review_gate
 
-A layered review-and-test gate for AI-generated Python code:
+## TL;DR
 
-- **`gauntlet`** — a standalone, stdlib-only Python CLI that runs tiered deterministic
-  gates (`fast`, `exec`, `gen`, `deep`) and emits findings in one stable JSON contract.
-  The identical binary runs in pi, in a `pre-push` hook, and in GitHub Actions.
-- **a pi package** (extension + skill + prompt template) that orchestrates the CLI inside
-  the [pi](https://pi.dev) harness, mechanically enforces the test-lock during fix rounds,
-  and runs the cross-model review + human-approval layers.
+An AI agent writes code fast. But the code can have hidden problems.
 
-Built and verified layer by layer: 116 CLI tests, a 47-case test-lock decision matrix,
-end-to-end runs in pi (TUI, RPC, and headless), a network-less Docker sandbox run, and
-a red→green CI demonstration on this repo's own workflow.
+This repository is a quality gate for that code. The gate:
 
-## Layers
+- finds bugs, bad imports, weak tests, and security problems in Python code
+- runs the cheap checks first and the slow checks last
+- lets a second, different AI model review the code
+- asks a human to decide the risky findings
+- blocks the code until the checks pass.
 
-| Layer | What it catches | Tool | Where it lives |
+The same tool runs on your computer, in the [pi](https://pi.dev) agent, in a git
+pre-push hook, and in CI. The result is always the same.
+
+Install the pi package:
+
+```bash
+pi install git:github.com/aber0016/code_review_gate@v0.1.0
+```
+
+## What is in this repository
+
+This repository has two parts:
+
+- **`gauntlet`** — a Python CLI in `cli/`. It runs the check tiers (`fast`, `exec`,
+  `gen`, `deep`). It writes each finding in one stable JSON format. The core uses
+  only the Python standard library.
+- **A pi package** — an extension, a skill, and a prompt template for the pi agent.
+  The internal package name is `pi-gauntlet`. The package runs the CLI, controls
+  the fix loop, applies the test-lock, and starts the AI review.
+
+## The layers
+
+| Layer | What it finds | Tool | Where it runs |
 |---|---|---|---|
-| 0 | Style, obvious bugs, secrets | ruff, detect-secrets | `gauntlet --tier fast` + pre-push hook |
-| 1 | Type errors, hallucinated APIs, insecure patterns | mypy, bandit | `gauntlet --tier fast` |
-| 2 | Hallucinated/slopsquatted deps, known CVEs | pip-audit, uv lockfile, import-existence check | `gauntlet --tier fast` |
-| 3 | Crashes, regressions, untested changed lines | pytest + diff-cover, optional Docker sandbox | `gauntlet --tier exec` |
-| 4 | Missing edge cases | Hypothesis scaffolds + coverage-validated agent tests | `gauntlet --tier gen` + pi extension |
-| 5 | Tautological/weak tests | mutmut on changed files | `gauntlet --tier deep` |
-| 6 | Intent mismatch, semantic bugs | Cross-model LLM diff review | pi extension (`/gate`) |
-| 7 | Judgment calls | Human approval of parked findings | pi extension UI |
+| 0 | Style errors, obvious bugs, secrets | ruff, detect-secrets | `gauntlet --tier fast` + pre-push hook |
+| 1 | Type errors, calls to APIs that do not exist, unsafe patterns | mypy, bandit | `gauntlet --tier fast` |
+| 2 | Imports that do not exist, unknown new packages, known CVEs | pip-audit, uv lockfile, import check | `gauntlet --tier fast` |
+| 3 | Crashes, regressions, changed lines without tests | pytest + diff-cover, optional Docker sandbox | `gauntlet --tier exec` |
+| 4 | Missing edge cases | Hypothesis scaffolds + validated agent tests | `gauntlet --tier gen` + pi extension |
+| 5 | Weak tests that find no bugs | mutmut on the changed files | `gauntlet --tier deep` |
+| 6 | Code that does not do what the user wanted | Review by a different AI model | pi extension (`/gate`) |
+| 7 | Decisions that need human judgment | Human approval of parked findings | pi extension dialogs |
 
-## Design principles
+## Two rules control the design
 
-1. **One binary defines "green".** All deterministic logic lives in the `gauntlet` CLI;
-   the pi extension never re-implements a check.
-2. **The harness enforces what prompts can only request.** During fix rounds the fixing
-   agent is *mechanically blocked* from editing tests via pi `tool_call` interception —
-   not merely instructed to leave them alone. The block patterns are a tripwire against
-   accidental/lazy tampering by an in-harness agent, **not a security boundary** against
-   a deliberately adversarial process.
+1. **One binary decides "green".** All checks that give a fixed result are in the
+   `gauntlet` CLI. The same command runs in pi, in the pre-push hook, and in
+   GitHub Actions. The pi extension does not do its own checks.
+2. **The harness enforces the rules. Prompts only ask.** In a fix round, the
+   system blocks the write access of the agent to the test files. An instruction
+   alone is not enough. Note: the block patterns stop a careless agent. They
+   are not a security barrier against a hostile process.
 
 ## Quick start
 
-```bash
-# CLI (works anywhere: pi, pre-push, CI)
-uv pip install -e ./cli            # into the target repo's venv
-gauntlet run --tier fast --base origin/main --json
-gauntlet install-hook              # pre-push gate; git push --no-verify bypasses
+### The CLI
 
-# pi package (pin a tag — pi packages run with your full system permissions)
-pi install git:github.com/aber0016/code_review_gate@v0.1.0
-# then, inside pi: /gate [base] [--gen --bugfix --deep --review-only --intent "…"]
+Install the CLI into the venv of the target repository:
+
+```bash
+uv pip install -e ./cli
 ```
 
-Config: `.gauntlet.toml` at the target repo root — `base`, `src_paths`, `test_paths`,
-`exclude_paths`, `sandbox = "none"|"docker"`, `sandbox_image`, `[exec] diff_cover_min`,
-`[fix] max_rounds`, `[deep] blocking/max_survivors`, `[review] provider/model`,
-per-runner `[runners.<name>] enabled/args/timeout` (plus `[runners.imports] check_pypi`).
+Run the fast tier:
 
-The docker sandbox runs with `--network=none` (no egress — that's the point), so
-`sandbox_image` must pre-contain the project's build backend and test deps, e.g.:
+```bash
+gauntlet run --tier fast --base origin/main --json
+```
+
+Install the pre-push hook:
+
+```bash
+gauntlet install-hook
+```
+
+The hook blocks a `git push` when the gate is red. To skip the hook one time,
+use `git push --no-verify`.
+
+The exit codes are: `0` = no blocking findings. `1` = blocking findings.
+`2` = a runner failed. A failed runner also makes the gate red.
+
+### The pi package
+
+Install the package with a pinned tag:
+
+```bash
+pi install git:github.com/aber0016/code_review_gate@v0.1.0
+```
+
+Then run the gate in pi:
+
+```
+/gate [base] [--gen --bugfix --deep --review-only --intent "…"]
+```
+
+**Caution:** a pi package runs with your full system permissions. Install only a
+tag that you examined before.
+
+### Configuration
+
+Put a `.gauntlet.toml` file in the root of the target repository. All keys are
+optional:
+
+- `base` — the git ref to compare against
+- `src_paths` — the folders with the source code (default `["src"]`)
+- `test_paths` — the folders and files with the test code
+- `exclude_paths` — paths that the gate ignores
+- `sandbox` — `"none"` or `"docker"`
+- `sandbox_image` — the Docker image for the sandbox
+- `[exec] diff_cover_min` — the minimum coverage of the changed lines, in percent
+- `[fix] max_rounds` — the maximum number of automatic fix rounds
+- `[deep] blocking`, `max_survivors` — the limits for mutation testing
+- `[review] provider`, `model` — the AI model for the review
+- `[runners.<name>] enabled`, `args`, `timeout` — options for one runner
+- `[runners.imports] check_pypi` — optional age check of new packages on PyPI.
+
+### The Docker sandbox
+
+The `exec` tier can run the tests in a Docker container. The container has no
+network access (`--network=none`). Because of this, pip cannot download packages
+in the container. The image must contain the build backend and the test
+dependencies:
 
 ```dockerfile
 FROM python:3.12-slim
 RUN pip install --no-cache-dir hatchling editables pytest pytest-cov
 ```
 
-A bare image fails visibly (pip cannot reach PyPI offline); it never passes silently.
+If the image does not have these packages, the run fails with a clear message.
+The gate does not pass silently.
 
 ## Demo
 
-Transcript record of the end-to-end acceptance run (scratch copy of `fixture/`, one pi
-session driven over RPC, gpt-5.6-sol as author/fixer, deepseek-v4-pro as reviewer;
-dialog choices below are the "human"):
+We ran the full pipeline on a copy of `fixture/`. The fixture has these
+planted bugs:
 
-1. **`/gate base0` → RED.** Findings from 5 tools (`imports`, `mypy`, `ruff`, `bandit`,
-   `diff-cover`) across layers `static`, `supply-chain`, `exec`. Parking dialogs:
-   `requestz` hallucinated import, bare `except`, MD5 — approved-to-unblock (Layer 7).
-2. **Fix loop:** round 1 resolved both mypy errors (the agent swapped `requestz` →
-   `requests`; the re-run gate immediately flagged *"`requests` installed but
-   undeclared"* — the gate catching its own fix's supply-chain fallout). The exec
-   tier's diff-coverage error can't be fixed under the test-lock, so the round budget
-   exhausted and the gate stayed RED with the coverage finding parked. ≤ 3 rounds;
-   `git status tests/` clean throughout.
-3. **Human fixes (scripted):** `requestz` → stdlib `json.loads`, `md5` → `sha256`,
-   `qty <= 10` → `qty < 10`; committed.
-4. **`/gate base0 --gen --bugfix`:** test-author round under the inverse lock authored
-   `tests/test_fetcher.py` + `tests/test_hasher.py`; validation kept 2 / rejected 0;
-   diff coverage 14.0% → **100.0%**; fail-before-fix guard satisfied (the new tests
-   error on `base0`, where the hallucinated import breaks); kept tests landed in
-   exactly one `test: gauntlet test-author round` commit.
-5. **`/gate base0 --deep`:** first proved the tension the tiers are designed around —
-   with coverage saturated, the boundary tests had been rejected as "adds zero covered
-   lines", and mutation testing duly reported `qty < 10 → qty <= 10` **surviving**.
-   After fixing the saturation edge (at 100% diff coverage, pass/fail + the bugfix
-   guard decide, not an unsatisfiable coverage delta), a directed test-author round
-   kept the boundary tests — and the same `/gate --deep` reported **0 surviving
-   mutants** in `pricing.py`.
-6. **`/gate base0 --review-only --intent "discount applies from the 10th unit…"`:**
-   the out-of-family reviewer parked two real semantic findings — `fetch_json`
-   conflating a JSON `null` payload with a parse error, and a test docstring
-   contradicting the stated non-security intent of `digest`. (Earlier, with the buggy
-   boundary still in place, the same reviewer flagged *"qty <= 10 still denies the
-   discount at the 10th unit"* — the Layer 6 catch no deterministic tool can make.)
-7. **Final `/gate base0` → green.** Widget: `⛩ gate base0..HEAD — fast ✓ 1.9s |
-   exec ✓ 1.3s | 0 parked`. `git diff base0 -- tests/` contains only the test-author
-   rounds' files; `git log base0..HEAD -- tests/` shows exactly the two
-   `test: gauntlet test-author round` commits.
+- an import that does not exist (`requestz`)
+- a bare `except`
+- MD5 as the hash function
+- a wrong boundary (`qty <= 10`)
+- a weak test.
 
-Reward-hacking defenses verified separately (Phase 4): a scripted provider forcing
-`edit tests/test_pricing.py` and `pytest -k` inside a genuine fix round was blocked
-mechanically with the reasons shown, and a 47-case decision matrix covers the lock
-(fix + test-author modes) through the real module.
+One pi session ran the gate. The model gpt-5.6-sol was the author and the
+fixer. The model deepseek-v4-pro was the reviewer. A human made the dialog
+choices.
+
+1. `/gate base0` → the gate is RED. Five tools report findings: `imports`,
+   `mypy`, `ruff`, `bandit`, and `diff-cover`. The dialogs park the risky
+   findings for the human.
+2. The fix loop starts. The agent repairs the two mypy errors in round 1. The
+   agent replaces `requestz` with `requests`. The gate then reports a new
+   problem: `requests` is not a declared dependency. The coverage error stays,
+   because the test-lock does not let the fixer change the tests. The gate
+   stays RED.
+3. The human repairs the code: `json.loads` replaces the import that does not
+   exist, `sha256` replaces `md5`, and `qty < 10` replaces `qty <= 10`.
+4. `/gate base0 --gen --bugfix` → the test-author round writes two test files.
+   The validation keeps both files. The coverage of the changed lines goes from
+   14% to 100%. The new tests fail on the old code and pass on the new code.
+   The kept tests go into one commit.
+5. `/gate base0 --deep` → mutation testing first reported one mutant that the
+   tests did not detect (`qty < 10` → `qty <= 10`). After a boundary test, the
+   same command reports 0 survivors.
+6. `/gate base0 --review-only --intent "…"` → the reviewer parks two correct
+   findings: `fetch_json` mixes a JSON `null` with a parse error, and a test
+   docstring does not agree with the given intent. Before the fix, the same
+   reviewer found the wrong boundary. No fixed-result tool can find that type
+   of bug.
+7. The final `/gate base0` is green. The widget shows `fast ✓ | exec ✓ |
+   0 parked`. Only the test-author commits changed the `tests/` folder.
+
+We tested the test-lock separately. A scripted model tried to change
+`tests/test_pricing.py` and tried to run `pytest -k` in a fix round. The system
+blocked the two calls and showed the reasons. A decision matrix with 47 cases
+covers the lock rules.
+
+## License
+
+MIT. See the `LICENSE` file.
