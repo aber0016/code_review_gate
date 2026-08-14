@@ -36,16 +36,126 @@ This repository has two parts:
 
 | Layer | What it finds | Tool | Where it runs |
 |---|---|---|---|
-| 0 | Style errors, obvious bugs, secrets | ruff, detect-secrets | `gauntlet --tier fast` + pre-push hook |
+| 0 | Style errors, obvious bugs, secrets, personal data (opt-in), changes on critical paths, large diffs | ruff, detect-secrets, critical-paths, diff-size | `gauntlet --tier fast` + pre-push hook |
 | 1 | Type errors, calls to APIs that do not exist, unsafe patterns | mypy, bandit | `gauntlet --tier fast` |
 | 2 | Imports that do not exist, unknown new packages, known CVEs | pip-audit, uv lockfile, import check | `gauntlet --tier fast` |
 | 3 | Crashes, regressions, changed lines without tests | pytest + diff-cover, optional Docker sandbox | `gauntlet --tier exec` |
 | 4 | Missing edge cases | Hypothesis scaffolds + validated agent tests | `gauntlet --tier gen` + pi extension |
-| 5 | Weak tests that find no bugs | mutmut on the changed files | `gauntlet --tier deep` |
+| 5 | Weak tests that find no bugs; diffs that delete, skip, or weaken tests | mutmut on the changed files (deep); testdiff (fast) | `gauntlet --tier deep` + `--tier fast` |
 | 6 | Code that does not do what the user wanted | Review by a different AI model | pi extension (`/gate`) |
 | 7 | Decisions that need human judgment | Human approval of parked findings | pi extension dialogs |
 
-## Two rules control the design
+## Deterministic checks and AI judgment
+
+The gate has two types of checks. Do not mix them up:
+
+- **Deterministic** — a program computes the result. The same input always gives
+  the same result. No AI model makes the decision.
+- **AI judgment** — a language model reads the code and gives an opinion. The
+  result can change between runs. It can be wrong.
+
+| Layer | Check | Type |
+|---|---|---|
+| 0 | ruff, detect-secrets, PII scan, critical-paths, diff-size | Deterministic |
+| 1 | mypy, bandit | Deterministic |
+| 2 | import check, pip-audit, lockfile check | Deterministic |
+| 3 | pytest, diff-cover, Docker sandbox | Deterministic |
+| 4 | Hypothesis scaffolds | Deterministic |
+| 4 | Agent-written tests | Mixed: an AI writes the tests. A deterministic check keeps or rejects each test. |
+| 5 | mutmut, testdiff | Deterministic |
+| 6 | Cross-model review | AI judgment |
+| 7 | Parked-finding approval | Human judgment (not AI) |
+
+Three rules follow from this split:
+
+- All deterministic checks are in the `gauntlet` CLI. All AI judgment is in the
+  pi extension. CI and the pre-push hook run only the CLI. Because of this, a
+  headless run contains **zero** AI judgment: the same commands give the same
+  verdict every time.
+- The mixed parts always end in a deterministic decision. In layer 4, the AI
+  writes a test, but the gate keeps the test only when it fails on the old code
+  and passes on the new code. In the fix loop, the AI changes the code, but the
+  gate goes green only when the deterministic tiers pass again.
+- AI judgment cannot approve anything. The review (layer 6) can only add
+  findings. Only a human (layer 7) can dismiss a parked finding, and only a code
+  repair can clear a tool finding. In a headless run there is no dialog, so
+  every parked finding blocks.
+
+## The human decision (layer 7)
+
+### What the human sees
+
+The gate does not show the human everything. It shows only the findings that
+need a decision: the findings with the action `ask-user`. Examples: a possible
+secret, a survived mutant, a change on a critical path, a reviewer finding.
+
+The human sees three things in pi:
+
+1. **A status widget.** One line, always visible. It shows the result of each
+   tier, the number of parked findings, and the fix round, for example
+   `fast ✓ | exec ✓ | 2 parked | round 1/3`.
+2. **One dialog per parked finding.** The dialog shows the tool, the file and
+   line, the message, and the context (for example "auto-fix budget
+   exhausted"). The gate shows at most 10 dialogs per pass. More findings stay
+   parked, and the widget shows the count. `Esc` stops the dialogs; the rest
+   stays parked.
+3. **A final report in the transcript.** It shows the verdict (green, red, or
+   crashed), a one-line summary per tier, the counts of parked and dismissed
+   findings, and each open finding with its severity, file, and line. The
+   reviewer findings from layer 6 are in the same list.
+
+In a headless run (CI, pre-push hook) there are no dialogs. The CLI prints the
+same findings as text, and every parked finding blocks.
+
+### The three choices
+
+Each dialog has three options. Each option has one exact effect:
+
+- **Approve (dismiss)** — the human accepts the risk. The gate records the
+  finding ID as dismissed and does not count it again in this session. The
+  transcript keeps a `dismissed by user` entry, so the decision stays visible.
+  A dismissal does not change the code.
+- **Send to fix round** — the human wants a repair. The gate marks the finding
+  ID and puts the finding into the next fix round (see below).
+- **Abort gate** — the gate stops with a red verdict. Nothing is dismissed.
+
+### How the gate uses the feedback
+
+A finding that the human sends to a fix round becomes work for the agent. The
+gate builds one fix prompt and sends it to the agent as a message. The prompt
+contains:
+
+- the full findings as JSON (ID, tool, severity, file, line, message, and the
+  evidence, cut at 500 characters)
+- the diff base and the round number, for example `round 1/3`
+- fixed instructions: repair **only** these findings, make the smallest change
+  that resolves each root cause, and confirm each fix with the one named check
+  (for example `mypy <file>`), not with the full suite.
+
+During the fix round the test-lock is armed: the agent cannot edit, skip, or
+delete tests to make a finding go away. When the agent reports that it is done,
+the gate runs the tiers again from the start. The loop stops when the gate is
+green, or when `[fix] max_rounds` is used up. Then the open findings go back to
+the human.
+
+### Your own feedback
+
+The dialog choices are fixed. For feedback in your own words, use one of these
+paths:
+
+- **Before the review:** give the reviewer your intent with
+  `/gate --review-only --intent "…"`. The reviewer compares the diff against
+  this text and flags a mismatch as a finding. That finding then goes through
+  the same park-and-decide flow.
+- **After a run:** write your feedback as a normal message to the agent
+  ("the boundary must be `qty < 10`, not `<=`"). The agent changes the code.
+  Then run `/gate` again. Your feedback becomes code, and the code goes
+  through the full gate again — the gate never trusts a change because a
+  human asked for it.
+
+There is no path where free-text feedback changes the verdict directly. Text
+can only lead to a code change or to a dismiss decision, and both are checked
+or recorded.
 
 1. **One binary decides "green".** All checks that give a fixed result are in the
    `gauntlet` CLI. The same command runs in pi, in the pre-push hook, and in
@@ -109,14 +219,26 @@ optional:
 - `src_paths` — the folders with the source code (default `["src"]`)
 - `test_paths` — the folders and files with the test code
 - `exclude_paths` — paths that the gate ignores
+- `critical_paths` — the red-list. A change on these paths always needs a human
+  decision, also when all tools are green. Example:
+  `critical_paths = ["src/auth/**", "**/migrations/**", "**/payments/**"]`.
+  The `/gate` command also starts the AI review for these changes, even when a
+  check tier is red.
 - `sandbox` — `"none"` or `"docker"`
 - `sandbox_image` — the Docker image for the sandbox
 - `[exec] diff_cover_min` — the minimum coverage of the changed lines, in percent
 - `[fix] max_rounds` — the maximum number of automatic fix rounds
-- `[deep] blocking`, `max_survivors` — the limits for mutation testing
+- `[deep] blocking`, `max_survivors` — the limits for mutation testing. When
+  `blocking` is false (the default), surviving mutants stay visible in the
+  report but do not block the gate.
 - `[review] provider`, `model` — the AI model for the review
 - `[runners.<name>] enabled`, `args`, `timeout` — options for one runner
-- `[runners.imports] check_pypi` — optional age check of new packages on PyPI.
+- `[runners.imports] check_pypi` — optional age check of new packages on PyPI
+- `[runners.diff-size] max_lines` — the advisory limit for the diff size
+  (default 500; 0 turns the check off). The finding never blocks.
+- `[runners.secrets] pii = true` — optional scan for personal data (emails,
+  IBANs, German insurance numbers). Checksums filter the matches, so synthetic
+  test data (for example `user@example.com`) stays green. Off by default.
 
 ### The Docker sandbox
 
