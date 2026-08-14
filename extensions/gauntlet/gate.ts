@@ -329,6 +329,17 @@ function startFixRound(
 // The gate pass: run tiers from the current index until green/red/fixing.
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether any tier run so far flagged a critical-path (red-list) file. The id
+ * prefix comes from the CLI's critical-paths runner — the extension never
+ * re-implements the glob matching (design principle 1: one binary decides).
+ */
+function criticalPathTouched(gate: ActiveGate): boolean {
+  return [...gate.latestRuns.values()].some(
+    (run) => run.report?.findings.some((f) => f.id.startsWith("critical-paths:")) ?? false,
+  );
+}
+
 async function executePass(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -399,6 +410,13 @@ async function executePass(
 
     if (parkedBlocking.length > 0) {
       updateWidget(ctx, gate);
+      if (criticalPathTouched(gate)) {
+        // Blast-radius rule: a red-list diff gets the Layer-6 cross-review
+        // even on a red tier, so the human decides with all findings on the
+        // table. reviewStage parks additively — the verdict stays red.
+        await reviewStage(pi, ctx, gate);
+        return;
+      }
       finalize(pi, ctx, gate, "red", parkedBlocking.length);
       return; // early exit: don't run the next tier while this one is red
     }
@@ -410,8 +428,9 @@ async function executePass(
 }
 
 /**
- * Layer 6: cross-model review, run only once the deterministic tiers are
- * green (§8.2) or on `--review-only`. Findings merge into the same parking
+ * Layer 6: cross-model review, run once the deterministic tiers are green
+ * (§8.2), on `--review-only`, or forced on a red tier when the diff touched
+ * a critical path (blast-radius rule). Findings merge into the same parking
  * flow; a "send to fix round" decision resets to tier 0 so the deterministic
  * gates re-verify whatever the fix changes.
  */

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from gauntlet.config import Config, ConfigError
+from gauntlet.config import Config, ConfigError, matches_any
 
 
 def load(tmp_path: Path, toml: str | None = None) -> Config:
@@ -19,6 +19,7 @@ class TestDefaults:
     def test_missing_file_yields_defaults(self, tmp_path: Path) -> None:
         config = load(tmp_path)
         assert config.base is None
+        assert config.critical_paths == []
         assert config.test_paths == ["tests", "test", "conftest.py"]
         assert config.src_paths == ["src"]
         assert config.sandbox == "none"
@@ -107,3 +108,23 @@ class TestValidation:
         config = load(tmp_path, "[runners.ruff]\nargs = [1]")
         with pytest.raises(ConfigError, match=r"runners\.ruff\.args"):
             config.runner_args("ruff")
+
+    def test_critical_paths(self, tmp_path: Path) -> None:
+        config = load(tmp_path, 'critical_paths = ["src/auth", "**/migrations/**"]')
+        assert config.critical_paths == ["src/auth", "**/migrations/**"]
+        with pytest.raises(ConfigError, match="critical_paths"):
+            load(tmp_path, 'critical_paths = "src/auth"')
+
+
+class TestMatchesAny:
+    def test_glob_patterns_cross_slashes(self) -> None:
+        assert matches_any(Path("src/auth/login.py"), ["src/auth/**"])
+        assert matches_any(Path("pkg/migrations/m1.py"), ["**/migrations/**"])
+        assert matches_any(Path("a/deep/nested/secret.py"), ["*secret*"])
+        assert not matches_any(Path("src/other.py"), ["src/auth/**"])
+
+    def test_plain_patterns_match_as_prefixes(self) -> None:
+        assert matches_any(Path("src/auth/login.py"), ["src/auth"])
+        assert matches_any(Path("src/auth"), ["src/auth"])
+        assert not matches_any(Path("src/authx/login.py"), ["src/auth"])
+        assert not matches_any(Path("a.py"), [])

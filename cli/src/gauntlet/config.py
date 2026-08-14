@@ -6,6 +6,8 @@ preserved in ``raw`` but ignored, so configs stay forward-compatible.
 
 from __future__ import annotations
 
+import fnmatch
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +17,7 @@ CONFIG_FILENAME = ".gauntlet.toml"
 
 DEFAULT_TEST_PATHS = ["tests", "test", "conftest.py"]
 DEFAULT_SRC_PATHS = ["src"]
+DEFAULT_CRITICAL_PATHS: list[str] = []
 DEFAULT_SANDBOX = "none"
 DEFAULT_SANDBOX_IMAGE = "python:3.12-slim"
 DEFAULT_DIFF_COVER_MIN = 80.0
@@ -27,6 +30,26 @@ _VALID_SANDBOXES = ("none", "docker")
 
 class ConfigError(ValueError):
     """Raised when .gauntlet.toml is malformed or carries invalid values."""
+
+
+_GLOB_META_RE = re.compile(r"[*?\[]")
+
+
+def matches_any(path: Path, patterns: list[str]) -> bool:
+    """Whether a repo-relative path matches any of the configured patterns.
+
+    Glob patterns go through :func:`fnmatch.fnmatch`, where ``*`` crosses
+    ``/`` — intentional, so ``src/auth/**`` and ``**/migrations/**`` behave
+    as users expect. A pattern with no glob metacharacters matches as an
+    exact path or directory prefix (same idiom as ``cli.excluded``).
+    """
+    for pat in patterns:
+        if _GLOB_META_RE.search(pat):
+            if fnmatch.fnmatch(str(path), pat):
+                return True
+        elif path == Path(pat) or path.is_relative_to(pat):
+            return True
+    return False
 
 
 @dataclass
@@ -58,7 +81,7 @@ class Config:
             raise ConfigError(
                 f"sandbox must be one of {_VALID_SANDBOXES}, got {self.sandbox!r}"
             )
-        for key in ("test_paths", "src_paths", "exclude_paths"):
+        for key in ("test_paths", "src_paths", "exclude_paths", "critical_paths"):
             value = self.raw.get(key)
             if value is not None and (
                 not isinstance(value, list)
@@ -104,6 +127,16 @@ class Config:
         """Repo-relative paths that count as first-party source."""
         value = self.raw.get("src_paths")
         return list(value) if value is not None else list(DEFAULT_SRC_PATHS)
+
+    @property
+    def critical_paths(self) -> list[str]:
+        """Red-list patterns (globs or prefixes) whose diffs always need a human.
+
+        Blast-radius axis: any change touching these paths parks a mandatory
+        ask-user finding, green tools or not. Empty (the default) disables it.
+        """
+        value = self.raw.get("critical_paths")
+        return list(value) if value is not None else list(DEFAULT_CRITICAL_PATHS)
 
     @property
     def sandbox(self) -> str:

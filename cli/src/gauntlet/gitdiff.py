@@ -14,6 +14,7 @@ from pathlib import Path
 GIT_TIMEOUT_S = 60.0
 
 _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_OLD_HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+\d+(?:,\d+)? @@")
 
 
 class GitError(RuntimeError):
@@ -139,6 +140,76 @@ def changed_files(root: Path, base: str) -> list[Path]:
     files = {Path(p) for p in out.split("\0") if p}
     files.update(_untracked_files(root))
     return sorted(p for p in files if (root / p).is_file())
+
+
+def name_status(root: Path, base: str) -> list[tuple[str, Path, Path | None]]:
+    """``(status, old_path, new_path)`` per file, merge-base vs working tree.
+
+    Runs ``git diff --name-status -M -z`` so deletions and renames — which
+    :func:`changed_files` deliberately hides — become visible. ``status`` is
+    the single letter (``M``/``A``/``D``/``R``/``C``…) with rename/copy scores
+    stripped; ``new_path`` is ``None`` except for renames and copies. Callers
+    must apply ``exclude_paths`` themselves: old-side paths never pass through
+    ``build_context``'s exclusion filter.
+    """
+    mb = merge_base(root, base)
+    out = _git(root, "diff", "--name-status", "-M", "-z", mb)
+    tokens = out.split("\0")
+    entries: list[tuple[str, Path, Path | None]] = []
+    i = 0
+    while i < len(tokens) and tokens[i]:
+        status = tokens[i][0]
+        if status in ("R", "C"):
+            entries.append((status, Path(tokens[i + 1]), Path(tokens[i + 2])))
+            i += 3
+        else:
+            entries.append((status, Path(tokens[i + 1]), None))
+            i += 2
+    return entries
+
+
+def removed_lines(root: Path, base: str) -> dict[Path, list[tuple[int, str]]]:
+    """Old-side removed ``(line_number, text)`` per old path, from ``-U0``.
+
+    Rename detection is on (``-M``, matching :func:`name_status`), so a renamed
+    file's removals are its real edits, keyed by the *old* path. Header lines
+    are only recognized directly after a ``diff --git`` marker, so removed
+    content that happens to look like ``--- a/...`` cannot be mistaken for one.
+    """
+    mb = merge_base(root, base)
+    out = _git(root, "diff", "--unified=0", "--no-color", "-M", mb)
+    removed: dict[Path, list[tuple[int, str]]] = {}
+    current: Path | None = None
+    old_line = 0
+    in_header = False
+    for raw in out.splitlines():
+        if raw.startswith("diff --git "):
+            in_header = True
+            current = None
+            continue
+        if in_header:
+            if raw.startswith("--- "):
+                target = raw[4:].split("\t", 1)[0]
+                if target == "/dev/null":
+                    current = None
+                else:
+                    target = _unquote_git_path(target)
+                    current = (
+                        Path(target[2:]) if target.startswith("a/") else Path(target)
+                    )
+            elif raw.startswith("+++ "):
+                in_header = False
+            continue
+        if current is None:
+            continue
+        match = _OLD_HUNK_RE.match(raw)
+        if match:
+            old_line = int(match.group(1))
+            continue
+        if raw.startswith("-"):
+            removed.setdefault(current, []).append((old_line, raw[1:]))
+            old_line += 1
+    return removed
 
 
 def changed_lines(root: Path, base: str) -> dict[Path, set[int]]:

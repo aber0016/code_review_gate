@@ -230,6 +230,8 @@ def all_runners(ctx: RunContext) -> list[Runner]:
     """
     from gauntlet.runners import (
         bandit,
+        critical_paths,
+        diff_size,
         hypothesis_gen,
         imports,
         lockfile,
@@ -239,6 +241,7 @@ def all_runners(ctx: RunContext) -> list[Runner]:
         pytest_cov,
         ruff,
         secrets,
+        testdiff,
     )
 
     return [
@@ -246,6 +249,9 @@ def all_runners(ctx: RunContext) -> list[Runner]:
         mypy.MypyRunner(ctx),
         bandit.BanditRunner(ctx),
         secrets.SecretsRunner(ctx),
+        critical_paths.CriticalPathsRunner(ctx),
+        testdiff.WeakenedTestsRunner(ctx),
+        diff_size.DiffSizeRunner(ctx),
         pip_audit.PipAuditRunner(ctx),
         lockfile.LockfileRunner(ctx),
         imports.ImportsRunner(ctx),

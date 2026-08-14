@@ -160,3 +160,12 @@ class TestTierGating:
         runners = gauntlet.runners.all_runners(make_ctx(tmp_path))
         names = [r.name for r in runners]
         assert len(names) == len(set(names))
+
+    def test_blast_radius_runners_in_fast_tier(self, tmp_path: Path) -> None:
+        names = {r.name for r in runners_for_tier(make_ctx(tmp_path), "fast")}
+        assert {"critical-paths", "testdiff", "diff-size"} <= names
+
+    def test_new_runners_honor_enabled_flag(self, tmp_path: Path) -> None:
+        ctx = make_ctx(tmp_path, {"runners": {"testdiff": {"enabled": False}}})
+        names = {r.name for r in runners_for_tier(ctx, "fast")}
+        assert "testdiff" not in names

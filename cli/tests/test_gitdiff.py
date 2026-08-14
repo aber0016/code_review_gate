@@ -87,6 +87,68 @@ class TestResolveBase:
         )
 
 
+class TestNameStatus:
+    def test_modify_add_delete(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "mod.py", "a\n")
+        write(scratch_repo, "gone.py", "b\n")
+        commit_all(scratch_repo, "base")
+        write(scratch_repo, "mod.py", "a2\n")
+        write(scratch_repo, "new.py", "c\n")
+        (scratch_repo / "gone.py").unlink()
+        commit_all(scratch_repo, "change")
+
+        entries = gitdiff.name_status(scratch_repo, "HEAD~1")
+        assert sorted(entries) == [
+            ("A", Path("new.py"), None),
+            ("D", Path("gone.py"), None),
+            ("M", Path("mod.py"), None),
+        ]
+
+    def test_rename_carries_both_paths(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "old.py", "line\n" * 20)
+        commit_all(scratch_repo, "base")
+        git(scratch_repo, "mv", "old.py", "renamed.py")
+        commit_all(scratch_repo, "rename")
+
+        entries = gitdiff.name_status(scratch_repo, "HEAD~1")
+        assert entries == [("R", Path("old.py"), Path("renamed.py"))]
+
+    def test_uncommitted_deletion_visible(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "gone.py", "b\n")
+        commit_all(scratch_repo, "base")
+        (scratch_repo / "gone.py").unlink()
+
+        assert gitdiff.name_status(scratch_repo, "HEAD") == [
+            ("D", Path("gone.py"), None)
+        ]
+
+
+class TestRemovedLines:
+    def test_old_side_numbering(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "a.py", "l1\nl2\nl3\nl4\nl5\n")
+        commit_all(scratch_repo, "base")
+        write(scratch_repo, "a.py", "l1\nl3\nl5\nl6\n")
+
+        removed = gitdiff.removed_lines(scratch_repo, "HEAD")
+        assert removed == {Path("a.py"): [(2, "l2"), (4, "l4")]}
+
+    def test_pure_deletion_and_multi_hunk(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "a.py", "keep\ndrop1\nkeep\ndrop2\ndrop3\n")
+        commit_all(scratch_repo, "base")
+        write(scratch_repo, "a.py", "keep\nkeep\n")
+
+        removed = gitdiff.removed_lines(scratch_repo, "HEAD")
+        assert removed == {Path("a.py"): [(2, "drop1"), (4, "drop2"), (5, "drop3")]}
+
+    def test_added_only_files_absent(self, scratch_repo: Path) -> None:
+        write(scratch_repo, "a.py", "x\n")
+        commit_all(scratch_repo, "base")
+        write(scratch_repo, "b.py", "new\n")
+        commit_all(scratch_repo, "add")
+
+        assert gitdiff.removed_lines(scratch_repo, "HEAD~1") == {}
+
+
 class TestMergeBase:
     def test_merge_base_of_branch(self, scratch_repo: Path) -> None:
         write(scratch_repo, "a.py", "x\n")
